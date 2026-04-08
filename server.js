@@ -3,7 +3,6 @@ import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import path from "path";
-import { Innertube } from "youtubei.js";
 
 dotenv.config();
 
@@ -11,7 +10,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
 // Serve static build files in production
 app.use(express.static(path.join(__dirname, "dist")));
@@ -21,57 +20,12 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", provider: "Groq (Free)" });
 });
 
-// Helper: extract YouTube video ID from any URL format
-function extractVideoId(url) {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([^&\n?#]+)/,
-    /^([a-zA-Z0-9_-]{11})$/,
-  ];
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match) return match[1];
-  }
-  return null;
-}
-
-// Helper: fetch transcript via InnerTube (YouTube's internal API)
-async function fetchTranscript(videoId) {
-  const yt = await Innertube.create({
-    lang: "en",
-    location: "US",
-    retrieve_player: false,
-  });
-
-  const info = await yt.getInfo(videoId);
-  const transcriptData = await info.getTranscript();
-
-  const segments =
-    transcriptData?.transcript?.content?.body?.initial_segments || [];
-
-  if (!segments.length) {
-    throw new Error("No transcript segments found for this video");
-  }
-
-  const text = segments
-    .map((seg) => seg?.snippet?.text || "")
-    .filter(Boolean)
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (!text) {
-    throw new Error("Transcript is empty");
-  }
-
-  return text;
-}
-
-// Summarize endpoint
+// Summarize endpoint — receives transcript from client (avoids cloud IP blocking)
 app.post("/api/summarize", async (req, res) => {
-  const { url, language } = req.body;
+  const { transcript, language } = req.body;
 
-  if (!url || !language) {
-    return res.status(400).json({ error: "Missing url or language" });
+  if (!transcript || !language) {
+    return res.status(400).json({ error: "Missing transcript or language" });
   }
 
   const apiKey = process.env.GROQ_API_KEY;
@@ -82,35 +36,14 @@ app.post("/api/summarize", async (req, res) => {
     });
   }
 
-  // Step 1: Extract video ID
-  const videoId = extractVideoId(url);
-  if (!videoId) {
-    return res.status(400).json({
-      error: "Could not extract video ID from URL. Please use a valid YouTube URL.",
-    });
+  // Trim transcript to ~12000 words to stay within context limits
+  let transcriptText = transcript;
+  const words = transcriptText.split(" ");
+  if (words.length > 12000) {
+    transcriptText = words.slice(0, 12000).join(" ") + "...";
   }
 
-  // Step 2: Fetch transcript via YouTube InnerTube API
-  let transcriptText = "";
-  try {
-    console.log(`Fetching transcript for video: ${videoId}`);
-    transcriptText = await fetchTranscript(videoId);
-
-    // Trim to ~12000 words to stay within context limits
-    const words = transcriptText.split(" ");
-    if (words.length > 12000) {
-      transcriptText = words.slice(0, 12000).join(" ") + "...";
-    }
-    console.log(`Transcript fetched: ${transcriptText.split(" ").length} words`);
-  } catch (transcriptErr) {
-    console.error("Transcript error:", transcriptErr.message);
-    return res.status(422).json({
-      error:
-        "Could not fetch transcript. This video may have disabled captions, be private, age-restricted, or not have English subtitles. Please try another video.",
-    });
-  }
-
-  // Step 3: Summarize with Groq (Llama 3)
+  // Summarize with Groq (Llama 3)
   try {
     const groq = new Groq({ apiKey });
 
