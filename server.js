@@ -1,6 +1,7 @@
 import express from "express";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { YoutubeTranscript } from "youtube-transcript";
+import YoutubeTranscriptPkg from "youtube-transcript";
+const { YoutubeTranscript } = YoutubeTranscriptPkg;
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import path from "path";
